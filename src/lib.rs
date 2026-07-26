@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::process;
 use std::time::{Duration, Instant};
 
@@ -191,6 +191,7 @@ pub enum Error {
     WatcherRegisterReplySend(String),
     WatcherGetInvalid(String),
     WatcherGetReplySend(String),
+    WatcherSignalInvalid(String),
     WatcherSignalSend,
 }
 
@@ -475,7 +476,7 @@ impl Host {
         mut event_fn: EventFn,
         mut error_fn: ErrorFn,
         timeout: Option<Duration>,
-    ) -> Result<(), Error>
+    ) -> Result<bool, Error>
     where
         EventFn: FnMut(String, &Item, Event),
         ErrorFn: FnMut(Error),
@@ -722,12 +723,12 @@ impl Host {
                     ..
                 } => {
                     let Ok(item_name) = message.read1::<String>() else {
-                        error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                        error_fn(Error::WatcherSignalInvalid(sender.to_string()));
                         continue;
                     };
 
                     if self.items.contains_key(&item_name) {
-                        error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                        error_fn(Error::WatcherSignalInvalid(sender.to_string()));
                         continue;
                     }
 
@@ -765,12 +766,12 @@ impl Host {
                     ..
                 } => {
                     let Ok(item_name) = message.read1::<String>() else {
-                        error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                        error_fn(Error::WatcherSignalInvalid(sender.to_string()));
                         continue;
                     };
 
                     let Some(item) = self.items.remove(&item_name) else {
-                        error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                        error_fn(Error::WatcherSignalInvalid(sender.to_string()));
                         continue;
                     };
 
@@ -1219,7 +1220,8 @@ impl Host {
                                 "org.kde.StatusNotifierWatcher",
                                 "StatusNotifierItemUnregistered",
                             )
-                            .unwrap(),
+                            .unwrap()
+                            .append1(&name),
                             &mut error_fn,
                             Error::WatcherSignalSend,
                         );
@@ -1662,13 +1664,19 @@ impl Host {
             }
         });
 
-        Ok(())
+        Ok(self.channel.watch().write)
     }
 }
 
 impl AsRawFd for Host {
     fn as_raw_fd(&self) -> RawFd {
         self.channel.watch().fd
+    }
+}
+
+impl AsFd for Host {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        unsafe { BorrowedFd::borrow_raw(self.channel.watch().fd) }
     }
 }
 
