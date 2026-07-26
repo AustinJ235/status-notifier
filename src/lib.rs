@@ -118,17 +118,17 @@ struct IntlItem {
 pub enum Event {
     Added,
     Removed,
-    NewTitle,
-    NewStatus,
-    NewIconThemePath,
-    NewIconName,
-    NewIconPixmap,
-    NewAttentionIconName,
-    NewAttentionIconPixmap,
-    NewOverlayIconName,
-    NewOverlayIconPixmap,
-    NewToolTip,
-    NewMenu,
+    UpdatedTitle,
+    UpdatedStatus,
+    UpdatedIconThemePath,
+    UpdatedIconName,
+    UpdatedIconPixmap,
+    UpdatedAttentionIconName,
+    UpdatedAttentionIconPixmap,
+    UpdatedOverlayIconName,
+    UpdatedOverlayIconPixmap,
+    UpdatedToolTip,
+    UpdatedMenu,
 }
 
 struct Watcher {
@@ -464,6 +464,10 @@ impl Host {
             "Event",
             (node_id, event, Variant(""), 0_u32),
         ));
+    }
+
+    pub fn using_intl_watcher(&self) -> bool {
+        self.intl_watcher_op.is_some()
     }
 
     pub fn process_events<EventFn, ErrorFn>(
@@ -807,7 +811,7 @@ impl Host {
                             };
 
                             item.status = status;
-                            event_fn(sender.to_string(), item, Event::NewStatus);
+                            event_fn(sender.to_string(), item, Event::UpdatedStatus);
                             continue;
                         },
                         "NewIconThemePath" => vec!["IconThemePath"],
@@ -1095,7 +1099,7 @@ impl Host {
                     }
 
                     if menu_updated {
-                        event_fn(sender.to_string(), item, Event::NewMenu);
+                        event_fn(sender.to_string(), item, Event::UpdatedMenu);
                     }
                 },
                 MsgMatch {
@@ -1448,7 +1452,7 @@ impl Host {
                                         && title.0 != item.title
                                     {
                                         item.title = title.0;
-                                        event_fn(item_name, item, Event::NewTitle);
+                                        event_fn(item_name, item, Event::UpdatedTitle);
                                     }
                                 },
                                 "IconThemePath" => {
@@ -1456,7 +1460,7 @@ impl Host {
                                         && path.0 != item.icon_theme_path
                                     {
                                         item.icon_theme_path = path.0;
-                                        event_fn(item_name, item, Event::NewIconThemePath);
+                                        event_fn(item_name, item, Event::UpdatedIconThemePath);
                                     }
                                 },
                                 "IconName" => {
@@ -1464,7 +1468,7 @@ impl Host {
                                         && name.0 != item.icon_name
                                     {
                                         item.icon_name = name.0;
-                                        event_fn(item_name, item, Event::NewIconName);
+                                        event_fn(item_name, item, Event::UpdatedIconName);
                                     }
                                 },
                                 "IconPixmap" => {
@@ -1474,7 +1478,7 @@ impl Host {
                                         && pixmap != item.icon_pixmap
                                     {
                                         item.icon_pixmap = pixmap;
-                                        event_fn(item_name, item, Event::NewIconPixmap);
+                                        event_fn(item_name, item, Event::UpdatedIconPixmap);
                                     }
                                 },
                                 "AttentionIconName" => {
@@ -1482,7 +1486,7 @@ impl Host {
                                         && name.0 != item.attention_icon_name
                                     {
                                         item.attention_icon_name = name.0;
-                                        event_fn(item_name, item, Event::NewAttentionIconName);
+                                        event_fn(item_name, item, Event::UpdatedAttentionIconName);
                                     }
                                 },
                                 "AttentionIconPixmap" => {
@@ -1492,7 +1496,11 @@ impl Host {
                                         && pixmap != item.attention_icon_pixmap
                                     {
                                         item.attention_icon_pixmap = pixmap;
-                                        event_fn(item_name, item, Event::NewAttentionIconPixmap);
+                                        event_fn(
+                                            item_name,
+                                            item,
+                                            Event::UpdatedAttentionIconPixmap,
+                                        );
                                     }
                                 },
                                 "OverlayIconName" => {
@@ -1500,7 +1508,7 @@ impl Host {
                                         && name.0 != item.overlay_icon_name
                                     {
                                         item.overlay_icon_name = name.0;
-                                        event_fn(item_name, item, Event::NewOverlayIconName);
+                                        event_fn(item_name, item, Event::UpdatedOverlayIconName);
                                     }
                                 },
                                 "OverlayIconPixmap" => {
@@ -1510,7 +1518,7 @@ impl Host {
                                         && pixmap != item.overlay_icon_pixmap
                                     {
                                         item.overlay_icon_pixmap = pixmap;
-                                        event_fn(item_name, item, Event::NewOverlayIconPixmap);
+                                        event_fn(item_name, item, Event::UpdatedOverlayIconPixmap);
                                     }
                                 },
                                 "ToolTip" => {
@@ -1520,7 +1528,7 @@ impl Host {
                                         && tool_tip != item.tool_tip
                                     {
                                         item.tool_tip = tool_tip;
-                                        event_fn(item_name, item, Event::NewToolTip);
+                                        event_fn(item_name, item, Event::UpdatedToolTip);
                                     }
                                 },
                                 _ => (),
@@ -1567,7 +1575,7 @@ impl Host {
 
                             *node = new_node;
                             intl_item.menu_revision = revision;
-                            event_fn(item_name, item, Event::NewMenu);
+                            event_fn(item_name, item, Event::UpdatedMenu);
                         },
                     }
                 },
