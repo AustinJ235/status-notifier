@@ -152,6 +152,10 @@ enum ReplyTo {
     },
 }
 
+/// The main object representing `StatusNotifierHost`.
+///
+/// **Note**: The built-in `StatusNotifierWatcher` will only be used if there isn't a
+/// `StatusNotifierWatcher` already registered.
 pub struct Host {
     channel: Channel,
     bus_name: String,
@@ -160,9 +164,9 @@ pub struct Host {
     pending_replies: HashMap<u32, (Instant, ReplyTo)>,
 }
 
+
 #[derive(Debug)]
 pub enum Error {
-    UsageInvalid,
     ConnectSend(dbus::Error),
     ConnectReplyInvalid,
     Disconnected,
@@ -202,6 +206,7 @@ pub enum ScrollOrientation {
 }
 
 impl Host {
+    /// Connect to dbus, register `StatusNotiiferHost` and optionally `StatusNotifierWatcher`.
     pub fn new() -> Result<Self, Error> {
         let mut channel = Channel::get_private(BusType::Session).map_err(Error::ConnectSend)?;
         let bus_msg = channel.pop_message().ok_or(Error::ConnectReplyInvalid)?;
@@ -302,6 +307,7 @@ impl Host {
         Ok(host)
     }
 
+    /// Get an [`Item`] from the item's bus name.
     pub fn get_item<N>(&self, item_name: N) -> Option<&Item>
     where
         N: AsRef<str>,
@@ -311,12 +317,14 @@ impl Host {
             .and_then(|intl_item| intl_item.item_op.as_ref())
     }
 
+    /// Get all existing [`Item`]'s.
     pub fn get_all_items(&self) -> impl Iterator<Item = (&String, &Item)> {
         self.items.iter().filter_map(|(item_name, intl_item)| {
             intl_item.item_op.as_ref().map(|item| (item_name, item))
         })
     }
 
+    /// Call the `Activate` method of `StatusNotifierItem` interface.
     pub fn item_activate<N>(&self, item_name: N, x: i32, y: i32)
     where
         N: AsRef<str>,
@@ -330,6 +338,7 @@ impl Host {
         ));
     }
 
+    /// Call the `ContextMenu` method of `StatusNotifierItem` interface.
     pub fn item_context_menu<N>(&self, item_name: N, x: i32, y: i32)
     where
         N: AsRef<str>,
@@ -343,6 +352,7 @@ impl Host {
         ));
     }
 
+    /// Call the `SecondaryActivate` method of `StatusNotifierItem` interface.
     pub fn item_secondary_activate<N>(&self, item_name: N, x: i32, y: i32)
     where
         N: AsRef<str>,
@@ -356,6 +366,7 @@ impl Host {
         ));
     }
 
+    /// Call the `Scroll` method of `StatusNotifierItem` interface.
     pub fn item_scroll<N>(&self, item_name: N, delta: i32, orientation: ScrollOrientation)
     where
         N: AsRef<str>,
@@ -375,6 +386,7 @@ impl Host {
         ));
     }
 
+    /// Call the `clicked` method of the `dbusmenu` interface.
     pub fn menu_clicked<N>(&self, item_name: N, node_id: i32)
     where
         N: AsRef<str>,
@@ -382,6 +394,7 @@ impl Host {
         self.menu_event(item_name.as_ref(), node_id, "clicked");
     }
 
+    /// Call the `hovered` method of the `dbusmenu` interface.
     pub fn menu_hovered<N>(&self, item_name: N, node_id: i32)
     where
         N: AsRef<str>,
@@ -389,6 +402,7 @@ impl Host {
         self.menu_event(item_name.as_ref(), node_id, "hovered");
     }
 
+    /// Call the `opened` method of the `dbusmenu` interface.
     pub fn menu_opened<N>(&self, item_name: N, node_id: i32)
     where
         N: AsRef<str>,
@@ -396,6 +410,7 @@ impl Host {
         self.menu_event(item_name.as_ref(), node_id, "opened");
     }
 
+    /// Call the `closed` method of the `dbusmenu` interface.
     pub fn menu_closed<N>(&self, item_name: N, node_id: i32)
     where
         N: AsRef<str>,
@@ -467,10 +482,23 @@ impl Host {
         ));
     }
 
+    /// Check if the internal `StatusNotifierWatcher` is being used.
     pub fn using_intl_watcher(&self) -> bool {
         self.intl_watcher_op.is_some()
     }
 
+    /// Process pending [`Event`] and [`Error`]'s.
+    ///
+    /// - `event_fn` callback is used for events of an [`Item`].
+    /// - `error_fn` callback is used for [`Error`]'s that occur that are non-fatal.
+    ///    - The method itself will return an `Err(..)` if the error is fatal.
+    /// - `timeout` field is used to configure the blocking behavior.
+    ///     - `None` will block until there an event or an error to be processed.
+    ///     - `Some(Duration::ZERO)` will not block (primary used for polling).
+    ///
+    /// **Note**: This method will return `Ok(true)` when there are pending writes to the `Fd`. This *should*
+    /// be relatively rare, so it can be ignored for initial implementations, but should be
+    /// considered when writing more robust implementations.
     pub fn process_events<EventFn, ErrorFn>(
         &mut self,
         mut event_fn: EventFn,
