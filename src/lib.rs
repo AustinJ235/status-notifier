@@ -1,3 +1,13 @@
+//! A [StatusNotifierItem](https://www.freedesktop.org/wiki/Specifications/StatusNotifierItem/)
+//! host, for building system trays and similar applications.
+//!
+//! [`Host`] connects to the session bus, registers a `StatusNotifierHost` (and a built-in
+//! `StatusNotifierWatcher` if none is running), and keeps track of every registered item along
+//! with its menu. Changes are delivered as [`Event`]s through [`Host::process_events`], and items
+//! are interacted with through the `item_*` and `menu_*` methods.
+//!
+//! See the `basic` and `polling` examples for usage.
+
 use std::collections::{HashMap, HashSet};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::process;
@@ -11,17 +21,25 @@ use dbus::message::Message;
 const DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER: u32 = 1;
 const DBUS_NAME_FLAG_DO_NOT_QUEUE: u32 = 4;
 
+/// The tooltip of an [`Item`].
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct ToolTip {
+    /// The freedesktop-compliant name of the tooltip's icon.
     pub icon_name: String,
+    /// The tooltip's icon as raw image data, possibly in multiple sizes.
     pub icon_pixmap: Vec<Pixmap>,
+    /// The title of the tooltip.
     pub title: String,
+    /// Descriptive text for the tooltip. May contain a subset of HTML markup.
     pub description: String,
 }
 
+/// An icon image provided by an item.
 #[derive(Default, Clone, PartialEq)]
 pub struct Pixmap {
+    /// The width and height of the image in pixels.
     pub dimensions: [i32; 2],
+    /// The raw image data in ARGB32 format, in network (big-endian) byte order.
     pub image_data: Vec<u8>,
 }
 
@@ -33,27 +51,50 @@ impl std::fmt::Debug for Pixmap {
     }
 }
 
+/// A `StatusNotifierItem` and its menu.
+///
+/// Most fields correspond directly to the properties of the `org.kde.StatusNotifierItem`
+/// interface. Fields an item doesn't provide are left with their default (empty) values.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Item {
+    /// The bus name the item is reachable at, used to identify it in the [`Host`] methods.
     pub bus_name: String,
+    /// The category of the item, e.g. `ApplicationStatus`, `Communications`, `SystemServices`
+    /// or `Hardware`.
     pub category: String,
+    /// A name unique to the application, e.g. its name.
     pub id: String,
+    /// A human readable name of the item.
     pub title: String,
+    /// The status of the item: `Passive`, `Active` or `NeedsAttention`.
     pub status: String,
+    /// The windowing-system dependent id of the application's window, or `0` if there is none.
     pub window_id: u64,
+    /// An additional path to search for the item's icons.
     pub icon_theme_path: String,
+    /// The freedesktop-compliant name of the main icon.
     pub icon_name: String,
+    /// The main icon as raw image data, possibly in multiple sizes.
     pub icon_pixmap: Vec<Pixmap>,
+    /// The name of an icon overlayed on top of the main icon.
     pub overlay_icon_name: String,
+    /// The overlay icon as raw image data, possibly in multiple sizes.
     pub overlay_icon_pixmap: Vec<Pixmap>,
+    /// The name of the icon used when the status is `NeedsAttention`.
     pub attention_icon_name: String,
+    /// The attention icon as raw image data, possibly in multiple sizes.
     pub attention_icon_pixmap: Vec<Pixmap>,
+    /// The name of an animation used when the status is `NeedsAttention`.
     pub attention_movie_name: String,
+    /// The tooltip of the item.
     pub tool_tip: ToolTip,
+    /// Whether the item only supports a context menu; activation should open the menu instead.
     pub item_is_menu: bool,
+    /// The root of the item's menu tree, [`MenuNode::Empty`] if the item has no menu.
     pub menu: MenuNode,
 }
 
+/// PNG image data for the icon of a [`MenuNode::Item`].
 #[derive(Clone, PartialEq)]
 pub struct IconData(pub Vec<u8>);
 
@@ -67,44 +108,75 @@ impl std::fmt::Debug for IconData {
     }
 }
 
+/// A node in the menu tree of an [`Item`].
+///
+/// Nodes are identified by their `id`, which is used with the `menu_*` methods of [`Host`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum MenuNode {
+    /// The item doesn't have a menu, or the menu hasn't been retrieved yet.
     #[default]
     Empty,
+    /// A (sub)menu containing other nodes.
     Menu {
+        /// The id of the node.
         id: i32,
+        /// The displayed text of the menu.
         label: String,
+        /// Whether the menu can be opened.
         enabled: bool,
+        /// Whether the menu should be shown.
         visible: bool,
+        /// The nodes contained in the menu.
         children: Vec<Self>,
     },
+    /// An entry of a menu.
     Item {
+        /// The id of the node.
         id: i32,
+        /// The displayed text of the entry.
         label: String,
+        /// Whether the entry can be clicked.
         enabled: bool,
+        /// Whether the entry should be shown.
         visible: bool,
+        /// The freedesktop-compliant name of the entry's icon.
         icon_name: String,
+        /// PNG data of the entry's icon.
         icon_data: IconData,
+        /// How the entry can be toggled.
         toggle_type: ToggleType,
+        /// The current toggle state of the entry.
         toggle_state: ToggleState,
     },
+    /// A separator between entries.
     Separator {
+        /// The id of the node.
         id: i32,
+        /// Whether the separator should be shown.
         visible: bool,
     },
 }
 
+/// How a [`MenuNode::Item`] can be toggled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToggleType {
+    /// The entry can't be toggled.
     None,
+    /// The entry can be toggled independently, like a checkbox.
     Checkmark,
+    /// The entry is part of a group where only one entry is toggled at a time, like a radio
+    /// button.
     Radio,
 }
 
+/// The toggle state of a [`MenuNode::Item`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToggleState {
+    /// The entry is toggled on.
     On,
+    /// The entry is toggled off.
     Off,
+    /// The state is indeterminate, or the entry can't be toggled.
     Unknown,
 }
 
@@ -114,20 +186,34 @@ struct IntlItem {
     item_op: Option<Item>,
 }
 
+/// A change of an [`Item`], delivered through the `event_fn` of [`Host::process_events`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
+    /// The item was registered and its properties retrieved.
     Added,
+    /// The item was removed.
     Removed,
+    /// [`Item::title`] was updated.
     UpdatedTitle,
+    /// [`Item::status`] was updated.
     UpdatedStatus,
+    /// [`Item::icon_theme_path`] was updated.
     UpdatedIconThemePath,
+    /// [`Item::icon_name`] was updated.
     UpdatedIconName,
+    /// [`Item::icon_pixmap`] was updated.
     UpdatedIconPixmap,
+    /// [`Item::attention_icon_name`] was updated.
     UpdatedAttentionIconName,
+    /// [`Item::attention_icon_pixmap`] was updated.
     UpdatedAttentionIconPixmap,
+    /// [`Item::overlay_icon_name`] was updated.
     UpdatedOverlayIconName,
+    /// [`Item::overlay_icon_pixmap`] was updated.
     UpdatedOverlayIconPixmap,
+    /// [`Item::tool_tip`] was updated.
     UpdatedToolTip,
+    /// [`Item::menu`] was updated.
     UpdatedMenu,
 }
 
@@ -158,7 +244,14 @@ enum ReplyTo {
     },
 }
 
-/// The main object representing `StatusNotifierHost`.
+/// The main object representing a `StatusNotifierHost`.
+///
+/// A `Host` connects to the session bus and keeps track of every registered `StatusNotifierItem`
+/// along with its menu. Item state is kept up to date, and changes are delivered as [`Event`]s,
+/// by calling [`Host::process_events`].
+///
+/// `Host` implements [`AsFd`], so instead of polling, the underlying connection can be registered
+/// with `poll`/`epoll`-style event loops to wait for activity (see the `polling` example).
 ///
 /// **Note**: The built-in `StatusNotifierWatcher` will only be used if there isn't a
 /// `StatusNotifierWatcher` already registered.
@@ -171,6 +264,9 @@ pub struct Host {
 }
 
 /// The error type used throughout the library.
+///
+/// [`operation`](Error::operation) tracks where the error originated and [`kind`](Error::kind)
+/// what went wrong, so the two can be matched on independently.
 #[derive(Debug)]
 pub struct Error {
     /// The operation the error originated from.
@@ -319,14 +415,26 @@ impl std::fmt::Display for ErrorKind {
     }
 }
 
+/// The direction of a [`Host::item_scroll`] request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollOrientation {
+    /// Scroll horizontally.
     Horizontal,
+    /// Scroll vertically.
     Vertical,
 }
 
 impl Host {
-    /// Connect to dbus, register `StatusNotiiferHost` and optionally `StatusNotifierWatcher`.
+    /// Connect to the session bus and register a `StatusNotifierHost`.
+    ///
+    /// If no `StatusNotifierWatcher` is present on the bus, the built-in one is registered and
+    /// used (see [`Host::using_intl_watcher`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if connecting to the session bus fails, if another `StatusNotifierHost`
+    /// is already registered ([`ErrorKind::HostAlreadyExists`]), or if any of the setup messages
+    /// can't be sent.
     pub fn new() -> Result<Self, Error> {
         let mut channel = Channel::get_private(BusType::Session)
             .map_err(|e| Error::new(Operation::Connect, ErrorKind::Dbus(e)))?;
@@ -438,6 +546,8 @@ impl Host {
     }
 
     /// Get an [`Item`] from the item's bus name.
+    ///
+    /// Returns `None` if the item doesn't exist or its properties haven't been retrieved yet.
     pub fn get_item<N>(&self, item_name: N) -> Option<&Item>
     where
         N: AsRef<str>,
@@ -454,7 +564,16 @@ impl Host {
         })
     }
 
-    /// Call the `Activate` method of `StatusNotifierItem` interface.
+    /// Call the `Activate` method of the `StatusNotifierItem` interface.
+    ///
+    /// This is the primary action of an item, typically triggered by a left click. `x` and `y`
+    /// are the screen coordinates of the triggering input event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item, or
+    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
+    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
     pub fn item_activate<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -462,7 +581,16 @@ impl Host {
         self.item_method(item_name.as_ref(), "Activate", (x, y))
     }
 
-    /// Call the `ContextMenu` method of `StatusNotifierItem` interface.
+    /// Call the `ContextMenu` method of the `StatusNotifierItem` interface.
+    ///
+    /// This asks the item to show its own context menu at the screen coordinates `x` and `y`,
+    /// typically triggered by a right click.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item, or
+    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
+    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
     pub fn item_context_menu<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -470,7 +598,16 @@ impl Host {
         self.item_method(item_name.as_ref(), "ContextMenu", (x, y))
     }
 
-    /// Call the `SecondaryActivate` method of `StatusNotifierItem` interface.
+    /// Call the `SecondaryActivate` method of the `StatusNotifierItem` interface.
+    ///
+    /// This is the secondary action of an item, typically triggered by a middle click. `x` and
+    /// `y` are the screen coordinates of the triggering input event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item, or
+    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
+    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
     pub fn item_secondary_activate<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -478,7 +615,16 @@ impl Host {
         self.item_method(item_name.as_ref(), "SecondaryActivate", (x, y))
     }
 
-    /// Call the `Scroll` method of `StatusNotifierItem` interface.
+    /// Call the `Scroll` method of the `StatusNotifierItem` interface.
+    ///
+    /// This reports scroll wheel input over the item, `delta` being the amount scrolled in the
+    /// given [`ScrollOrientation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item, or
+    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
+    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
     pub fn item_scroll<N>(
         &mut self,
         item_name: N,
@@ -539,7 +685,17 @@ impl Host {
         Ok(())
     }
 
-    /// Call the `clicked` method of the `dbusmenu` interface.
+    /// Send the `clicked` event of the `dbusmenu` interface to a menu node.
+    ///
+    /// This activates the [`MenuNode`] with `node_id`, e.g. after the user clicked the entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item,
+    /// [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu,
+    /// [`ErrorKind::MenuNodeDisabled`] if the node isn't enabled, or
+    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
+    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
     pub fn menu_clicked<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -547,7 +703,16 @@ impl Host {
         self.menu_event(item_name.as_ref(), node_id, "clicked")
     }
 
-    /// Call the `hovered` method of the `dbusmenu` interface.
+    /// Send the `hovered` event of the `dbusmenu` interface to a menu node.
+    ///
+    /// This tells the item that the pointer moved onto the [`MenuNode`] with `node_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item,
+    /// [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu, or
+    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
+    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
     pub fn menu_hovered<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -555,7 +720,16 @@ impl Host {
         self.menu_event(item_name.as_ref(), node_id, "hovered")
     }
 
-    /// Call the `opened` method of the `dbusmenu` interface.
+    /// Send the `opened` event of the `dbusmenu` interface to a menu node.
+    ///
+    /// This tells the item that the (sub)menu with `node_id` was shown to the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item,
+    /// [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu, or
+    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
+    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
     pub fn menu_opened<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -563,7 +737,16 @@ impl Host {
         self.menu_event(item_name.as_ref(), node_id, "opened")
     }
 
-    /// Call the `closed` method of the `dbusmenu` interface.
+    /// Send the `closed` event of the `dbusmenu` interface to a menu node.
+    ///
+    /// This tells the item that the (sub)menu with `node_id` was closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item,
+    /// [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu, or
+    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
+    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
     pub fn menu_closed<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -681,14 +864,14 @@ impl Host {
         self.intl_watcher_op.is_some()
     }
 
-    /// Process pending [`Event`] and [`Error`]'s.
+    /// Process pending [`Event`]s and [`Error`]s.
     ///
     /// - `event_fn` callback is used for events of an [`Item`].
-    /// - `error_fn` callback is used for [`Error`]'s that occur that are non-fatal.
+    /// - `error_fn` callback is used for [`Error`]s that occur that are non-fatal.
     ///    - The method itself will return an `Err(..)` if the error is fatal.
     /// - `timeout` field is used to configure the blocking behavior.
-    ///     - `None` will block until there an event or an error to be processed.
-    ///     - `Some(Duration::ZERO)` will not block (primary used for polling).
+    ///     - `None` will block until there is an event or an error to be processed.
+    ///     - `Some(Duration::ZERO)` will not block (primarily used for polling).
     ///
     /// **Note**: This method will return `Ok(true)` when there are pending writes to the `Fd`. This *should*
     /// be relatively rare, so it can be ignored for initial implementations, but should be
