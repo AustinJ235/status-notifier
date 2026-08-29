@@ -4,7 +4,7 @@ use std::process;
 use std::time::{Duration, Instant};
 
 use dbus::MessageType;
-use dbus::arg::{RefArg, Variant};
+use dbus::arg::{AppendAll, RefArg, Variant};
 use dbus::channel::{BusType, Channel};
 use dbus::message::Message;
 
@@ -150,6 +150,12 @@ enum ReplyTo {
         item_name: String,
         parent_id: i32,
     },
+    ItemMethod {
+        item_name: String,
+    },
+    MenuEvent {
+        item_name: String,
+    },
 }
 
 /// The main object representing `StatusNotifierHost`.
@@ -232,8 +238,12 @@ pub enum Operation {
     GetItems,
     /// Retrieving the properties of an item.
     ItemGet,
+    /// Calling a method of an item.
+    ItemMethod,
     /// Processing a signal sent by an item.
     ItemSignal,
+    /// Sending a menu event to an item.
+    MenuEvent,
     /// Retrieving the menu layout of an item.
     MenuGetLayout,
     /// Handling a registration request sent to the internal watcher.
@@ -255,7 +265,9 @@ impl std::fmt::Display for Operation {
             Self::RegisterHost => "registering the host",
             Self::GetItems => "retrieving the registered items",
             Self::ItemGet => "retrieving item properties",
+            Self::ItemMethod => "calling an item method",
             Self::ItemSignal => "processing an item signal",
+            Self::MenuEvent => "sending a menu event",
             Self::MenuGetLayout => "retrieving a menu layout",
             Self::WatcherRegister => "handling a watcher registration",
             Self::WatcherGet => "handling a watcher property request",
@@ -282,6 +294,12 @@ pub enum ErrorKind {
     HostAlreadyExists,
     /// The external `StatusNotifierWatcher` is no longer available.
     WatcherLost,
+    /// The given item bus name isn't known.
+    UnknownItem,
+    /// The given menu node doesn't exist in the item's menu.
+    UnknownMenuNode,
+    /// The given menu node is disabled.
+    MenuNodeDisabled,
 }
 
 impl std::fmt::Display for ErrorKind {
@@ -294,6 +312,9 @@ impl std::fmt::Display for ErrorKind {
             Self::Disconnected => f.write_str("the connection was lost"),
             Self::HostAlreadyExists => f.write_str("a StatusNotifierHost is already registered"),
             Self::WatcherLost => f.write_str("the StatusNotifierWatcher is no longer available"),
+            Self::UnknownItem => f.write_str("the item doesn't exist"),
+            Self::UnknownMenuNode => f.write_str("the menu node doesn't exist"),
+            Self::MenuNodeDisabled => f.write_str("the menu node is disabled"),
         }
     }
 }
@@ -434,56 +455,41 @@ impl Host {
     }
 
     /// Call the `Activate` method of `StatusNotifierItem` interface.
-    pub fn item_activate<N>(&self, item_name: N, x: i32, y: i32)
+    pub fn item_activate<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
     {
-        let _ = self.channel.send(Message::call_with_args(
-            item_name.as_ref(),
-            "/StatusNotifierItem",
-            "org.kde.StatusNotifierItem",
-            "Activate",
-            (x, y),
-        ));
+        self.item_method(item_name.as_ref(), "Activate", (x, y))
     }
 
     /// Call the `ContextMenu` method of `StatusNotifierItem` interface.
-    pub fn item_context_menu<N>(&self, item_name: N, x: i32, y: i32)
+    pub fn item_context_menu<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
     {
-        let _ = self.channel.send(Message::call_with_args(
-            item_name.as_ref(),
-            "/StatusNotifierItem",
-            "org.kde.StatusNotifierItem",
-            "ContextMenu",
-            (x, y),
-        ));
+        self.item_method(item_name.as_ref(), "ContextMenu", (x, y))
     }
 
     /// Call the `SecondaryActivate` method of `StatusNotifierItem` interface.
-    pub fn item_secondary_activate<N>(&self, item_name: N, x: i32, y: i32)
+    pub fn item_secondary_activate<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
     {
-        let _ = self.channel.send(Message::call_with_args(
-            item_name.as_ref(),
-            "/StatusNotifierItem",
-            "org.kde.StatusNotifierItem",
-            "SecondaryActivate",
-            (x, y),
-        ));
+        self.item_method(item_name.as_ref(), "SecondaryActivate", (x, y))
     }
 
     /// Call the `Scroll` method of `StatusNotifierItem` interface.
-    pub fn item_scroll<N>(&self, item_name: N, delta: i32, orientation: ScrollOrientation)
+    pub fn item_scroll<N>(
+        &mut self,
+        item_name: N,
+        delta: i32,
+        orientation: ScrollOrientation,
+    ) -> Result<(), Error>
     where
         N: AsRef<str>,
     {
-        let _ = self.channel.send(Message::call_with_args(
+        self.item_method(
             item_name.as_ref(),
-            "/StatusNotifierItem",
-            "org.kde.StatusNotifierItem",
             "Scroll",
             (
                 delta,
@@ -492,49 +498,103 @@ impl Host {
                     ScrollOrientation::Vertical => "vertical",
                 },
             ),
-        ));
+        )
+    }
+
+    fn item_method<A>(&mut self, item_name: &str, method: &str, args: A) -> Result<(), Error>
+    where
+        A: AppendAll,
+    {
+        if self.get_item(item_name).is_none() {
+            return Err(Error::with_peer(
+                Operation::ItemMethod,
+                ErrorKind::UnknownItem,
+                item_name,
+            ));
+        }
+
+        let serial = self
+            .channel
+            .send(Message::call_with_args(
+                item_name,
+                "/StatusNotifierItem",
+                "org.kde.StatusNotifierItem",
+                method,
+                args,
+            ))
+            .map_err(|()| {
+                Error::with_peer(Operation::ItemMethod, ErrorKind::Disconnected, item_name)
+            })?;
+
+        self.pending_replies.insert(
+            serial,
+            (
+                Instant::now(),
+                ReplyTo::ItemMethod {
+                    item_name: item_name.to_string(),
+                },
+            ),
+        );
+
+        Ok(())
     }
 
     /// Call the `clicked` method of the `dbusmenu` interface.
-    pub fn menu_clicked<N>(&self, item_name: N, node_id: i32)
+    pub fn menu_clicked<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
     {
-        self.menu_event(item_name.as_ref(), node_id, "clicked");
+        self.menu_event(item_name.as_ref(), node_id, "clicked")
     }
 
     /// Call the `hovered` method of the `dbusmenu` interface.
-    pub fn menu_hovered<N>(&self, item_name: N, node_id: i32)
+    pub fn menu_hovered<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
     {
-        self.menu_event(item_name.as_ref(), node_id, "hovered");
+        self.menu_event(item_name.as_ref(), node_id, "hovered")
     }
 
     /// Call the `opened` method of the `dbusmenu` interface.
-    pub fn menu_opened<N>(&self, item_name: N, node_id: i32)
+    pub fn menu_opened<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
     {
-        self.menu_event(item_name.as_ref(), node_id, "opened");
+        self.menu_event(item_name.as_ref(), node_id, "opened")
     }
 
     /// Call the `closed` method of the `dbusmenu` interface.
-    pub fn menu_closed<N>(&self, item_name: N, node_id: i32)
+    pub fn menu_closed<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
     {
-        self.menu_event(item_name.as_ref(), node_id, "closed");
+        self.menu_event(item_name.as_ref(), node_id, "closed")
     }
 
-    fn menu_event(&self, item_name: &str, node_id: i32, event: &str) {
+    fn menu_event(&mut self, item_name: &str, node_id: i32, event: &str) -> Result<(), Error> {
         let Some(intl_item) = self.items.get(item_name) else {
-            return;
+            return Err(Error::with_peer(
+                Operation::MenuEvent,
+                ErrorKind::UnknownItem,
+                item_name,
+            ));
         };
 
         let Some(item) = intl_item.item_op.as_ref() else {
-            return;
+            return Err(Error::with_peer(
+                Operation::MenuEvent,
+                ErrorKind::UnknownItem,
+                item_name,
+            ));
         };
+
+        if intl_item.menu_path.is_empty() {
+            return Err(Error::with_peer(
+                Operation::MenuEvent,
+                ErrorKind::UnknownMenuNode,
+                item_name,
+            ));
+        }
 
         let mut check_nodes = vec![&item.menu];
         let mut node_exists = false;
@@ -575,20 +635,45 @@ impl Host {
         }
 
         if !node_exists {
-            return;
+            return Err(Error::with_peer(
+                Operation::MenuEvent,
+                ErrorKind::UnknownMenuNode,
+                item_name,
+            ));
         }
 
         if event == "clicked" && !node_enabled {
-            return;
+            return Err(Error::with_peer(
+                Operation::MenuEvent,
+                ErrorKind::MenuNodeDisabled,
+                item_name,
+            ));
         }
 
-        let _ = self.channel.send(Message::call_with_args(
-            item_name,
-            &intl_item.menu_path,
-            "com.canonical.dbusmenu",
-            "Event",
-            (node_id, event, Variant(""), 0_u32),
-        ));
+        let serial = self
+            .channel
+            .send(Message::call_with_args(
+                item_name,
+                &intl_item.menu_path,
+                "com.canonical.dbusmenu",
+                "Event",
+                (node_id, event, Variant(""), 0_u32),
+            ))
+            .map_err(|()| {
+                Error::with_peer(Operation::MenuEvent, ErrorKind::Disconnected, item_name)
+            })?;
+
+        self.pending_replies.insert(
+            serial,
+            (
+                Instant::now(),
+                ReplyTo::MenuEvent {
+                    item_name: item_name.to_string(),
+                },
+            ),
+        );
+
+        Ok(())
     }
 
     /// Check if the internal `StatusNotifierWatcher` is being used.
@@ -1854,6 +1939,12 @@ impl Host {
                             intl_item.menu_revision = revision;
                             event_fn(item_name, item, Event::UpdatedMenu);
                         },
+                        ReplyTo::ItemMethod {
+                            ..
+                        }
+                        | ReplyTo::MenuEvent {
+                            ..
+                        } => (),
                     }
                 },
                 MsgMatch {
@@ -1911,6 +2002,24 @@ impl Host {
                                 item_name,
                             ));
                         },
+                        ReplyTo::ItemMethod {
+                            item_name,
+                        } => {
+                            error_fn(Error::with_peer(
+                                Operation::ItemMethod,
+                                ErrorKind::Dbus(e),
+                                item_name,
+                            ));
+                        },
+                        ReplyTo::MenuEvent {
+                            item_name,
+                        } => {
+                            error_fn(Error::with_peer(
+                                Operation::MenuEvent,
+                                ErrorKind::Dbus(e),
+                                item_name,
+                            ));
+                        },
                     }
                 },
                 MsgMatch {
@@ -1951,6 +2060,24 @@ impl Host {
                     } => {
                         error_fn(Error::with_peer(
                             Operation::MenuGetLayout,
+                            ErrorKind::Timeout,
+                            item_name.clone(),
+                        ));
+                    },
+                    ReplyTo::ItemMethod {
+                        item_name,
+                    } => {
+                        error_fn(Error::with_peer(
+                            Operation::ItemMethod,
+                            ErrorKind::Timeout,
+                            item_name.clone(),
+                        ));
+                    },
+                    ReplyTo::MenuEvent {
+                        item_name,
+                    } => {
+                        error_fn(Error::with_peer(
+                            Operation::MenuEvent,
                             ErrorKind::Timeout,
                             item_name.clone(),
                         ));
