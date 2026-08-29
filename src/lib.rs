@@ -164,39 +164,138 @@ pub struct Host {
     pending_replies: HashMap<u32, (Instant, ReplyTo)>,
 }
 
-
+/// The error type used throughout the library.
 #[derive(Debug)]
-pub enum Error {
-    ConnectSend(dbus::Error),
-    ConnectReplyInvalid,
+pub struct Error {
+    /// The operation the error originated from.
+    pub operation: Operation,
+    /// What went wrong.
+    pub kind: ErrorKind,
+    /// The bus name of the remote peer involved, when known.
+    pub peer: Option<String>,
+}
+
+impl Error {
+    fn new(operation: Operation, kind: ErrorKind) -> Self {
+        Self {
+            operation,
+            kind,
+            peer: None,
+        }
+    }
+
+    fn with_peer<P>(operation: Operation, kind: ErrorKind, peer: P) -> Self
+    where
+        P: Into<String>,
+    {
+        Self {
+            operation,
+            kind,
+            peer: Some(peer.into()),
+        }
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "error while {}", self.operation)?;
+
+        if let Some(peer) = self.peer.as_deref() {
+            write!(f, " ({peer})")?;
+        }
+
+        write!(f, ": {}", self.kind)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.kind {
+            ErrorKind::Dbus(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// The operation an [`Error`] originated from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    /// Connecting to or communicating with the session bus.
+    Connect,
+    /// Requesting a bus name.
+    RequestName,
+    /// Adding a signal match rule.
+    AddMatch,
+    /// Registering this host with the `StatusNotifierWatcher`.
+    RegisterHost,
+    /// Retrieving the registered items from the `StatusNotifierWatcher`.
+    GetItems,
+    /// Retrieving the properties of an item.
+    ItemGet,
+    /// Processing a signal sent by an item.
+    ItemSignal,
+    /// Retrieving the menu layout of an item.
+    MenuGetLayout,
+    /// Handling a registration request sent to the internal watcher.
+    WatcherRegister,
+    /// Handling a property request sent to the internal watcher.
+    WatcherGet,
+    /// Handling or emitting a signal of the internal watcher.
+    WatcherSignal,
+    /// Processing a reply to a previously sent message.
+    Reply,
+}
+
+impl std::fmt::Display for Operation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Connect => "communicating with the session bus",
+            Self::RequestName => "requesting a bus name",
+            Self::AddMatch => "adding a signal match rule",
+            Self::RegisterHost => "registering the host",
+            Self::GetItems => "retrieving the registered items",
+            Self::ItemGet => "retrieving item properties",
+            Self::ItemSignal => "processing an item signal",
+            Self::MenuGetLayout => "retrieving a menu layout",
+            Self::WatcherRegister => "handling a watcher registration",
+            Self::WatcherGet => "handling a watcher property request",
+            Self::WatcherSignal => "handling a watcher signal",
+            Self::Reply => "processing a reply",
+        })
+    }
+}
+
+/// What went wrong for an [`Error`].
+#[derive(Debug)]
+pub enum ErrorKind {
+    /// A message could not be sent.
+    SendFailed,
+    /// A message contained invalid or unexpected data.
+    InvalidData,
+    /// A reply wasn't received in time.
+    Timeout,
+    /// The remote peer replied with an error.
+    Dbus(dbus::Error),
+    /// The connection to the session bus was lost.
     Disconnected,
-    RequestNameSend(dbus::Error),
-    RequestNameReplyInvalid,
-    AddMatchSend(dbus::Error),
-    ReturnInvalid(String),
+    /// A `StatusNotifierHost` is already registered on the session bus.
     HostAlreadyExists,
-    HostRegisterSend,
-    HostRegister(dbus::Error),
-    HostWatcherLost,
-    HostRegisterTimeout,
-    HostGetItemsSend,
-    HostGetItems(dbus::Error),
-    HostGetItemsTimeout,
-    ItemGetSend(String),
-    ItemGet(String, dbus::Error),
-    ItemGetReplyInvalid(String),
-    ItemGetReplyTimeout(String),
-    ItemSignalInvalid(String),
-    MenuGetLayoutSend(String),
-    MenuGetLayout(String, dbus::Error),
-    MenuGetLayoutInvalid(String),
-    MenuGetLayoutTimeout(String),
-    WatcherRegisterInvalid(String),
-    WatcherRegisterReplySend(String),
-    WatcherGetInvalid(String),
-    WatcherGetReplySend(String),
-    WatcherSignalInvalid(String),
-    WatcherSignalSend,
+    /// The external `StatusNotifierWatcher` is no longer available.
+    WatcherLost,
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SendFailed => f.write_str("the message could not be sent"),
+            Self::InvalidData => f.write_str("invalid or unexpected data was received"),
+            Self::Timeout => f.write_str("the reply wasn't received in time"),
+            Self::Dbus(e) => write!(f, "{e}"),
+            Self::Disconnected => f.write_str("the connection was lost"),
+            Self::HostAlreadyExists => f.write_str("a StatusNotifierHost is already registered"),
+            Self::WatcherLost => f.write_str("the StatusNotifierWatcher is no longer available"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,9 +307,16 @@ pub enum ScrollOrientation {
 impl Host {
     /// Connect to dbus, register `StatusNotiiferHost` and optionally `StatusNotifierWatcher`.
     pub fn new() -> Result<Self, Error> {
-        let mut channel = Channel::get_private(BusType::Session).map_err(Error::ConnectSend)?;
-        let bus_msg = channel.pop_message().ok_or(Error::ConnectReplyInvalid)?;
-        let bus_name: String = bus_msg.read1().map_err(|_| Error::ConnectReplyInvalid)?;
+        let mut channel = Channel::get_private(BusType::Session)
+            .map_err(|e| Error::new(Operation::Connect, ErrorKind::Dbus(e)))?;
+
+        let bus_msg = channel
+            .pop_message()
+            .ok_or_else(|| Error::new(Operation::Connect, ErrorKind::InvalidData))?;
+
+        let bus_name: String = bus_msg
+            .read1()
+            .map_err(|_| Error::new(Operation::Connect, ErrorKind::InvalidData))?;
         let host_name = format!("org.kde.StatusNotifierHost-{}", process::id());
 
         let req_host_msg = channel
@@ -224,14 +330,17 @@ impl Host {
                 ),
                 Duration::from_secs(3),
             )
-            .map_err(Error::RequestNameSend)?;
+            .map_err(|e| Error::new(Operation::RequestName, ErrorKind::Dbus(e)))?;
 
         let req_host_reply: u32 = req_host_msg
             .read1()
-            .map_err(|_| Error::RequestNameReplyInvalid)?;
+            .map_err(|_| Error::new(Operation::RequestName, ErrorKind::InvalidData))?;
 
         if req_host_reply != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER {
-            return Err(Error::HostAlreadyExists);
+            return Err(Error::new(
+                Operation::RequestName,
+                ErrorKind::HostAlreadyExists,
+            ));
         }
 
         let req_watcher_msg = channel
@@ -245,11 +354,11 @@ impl Host {
                 ),
                 Duration::from_secs(3),
             )
-            .map_err(Error::RequestNameSend)?;
+            .map_err(|e| Error::new(Operation::RequestName, ErrorKind::Dbus(e)))?;
 
         let req_watcher_reply: u32 = req_watcher_msg
             .read1()
-            .map_err(|_| Error::RequestNameReplyInvalid)?;
+            .map_err(|_| Error::new(Operation::RequestName, ErrorKind::InvalidData))?;
 
         let use_intl_watcher = req_watcher_reply == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER;
 
@@ -270,7 +379,7 @@ impl Host {
                     ),
                     Duration::from_secs(3),
                 )
-                .map_err(Error::AddMatchSend)?;
+                .map_err(|e| Error::new(Operation::AddMatch, ErrorKind::Dbus(e)))?;
         }
 
         channel.set_watch_enabled(true);
@@ -299,7 +408,7 @@ impl Host {
                 "RegisterStatusNotifierHost",
                 ((&host.bus_name),),
             ))
-            .map_err(|()| Error::HostRegisterSend)?;
+            .map_err(|()| Error::new(Operation::RegisterHost, ErrorKind::SendFailed))?;
 
         host.pending_replies
             .insert(serial, (Instant::now(), ReplyTo::RegisterHost));
@@ -510,7 +619,7 @@ impl Host {
         ErrorFn: FnMut(Error),
     {
         if self.channel.read_write(timeout).is_err() {
-            return Err(Error::Disconnected);
+            return Err(Error::new(Operation::Connect, ErrorKind::Disconnected));
         }
 
         struct MsgMatch<'a> {
@@ -546,7 +655,11 @@ impl Host {
                     };
 
                     let Ok(host_name) = message.read1::<String>() else {
-                        error_fn(Error::WatcherRegisterInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherRegister,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
 
                         let _ = self.channel.send(reply_error(
                             &message,
@@ -559,7 +672,11 @@ impl Host {
                     let is_host_new = watcher.hosts.insert(host_name.clone());
 
                     if self.channel.send(message.method_return()).is_err() {
-                        error_fn(Error::WatcherRegisterReplySend(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherRegister,
+                            ErrorKind::SendFailed,
+                            sender,
+                        ));
                     }
 
                     if is_host_new && watcher.hosts.len() == 1 {
@@ -572,7 +689,7 @@ impl Host {
                             )
                             .unwrap(),
                             &mut error_fn,
-                            Error::WatcherSignalSend,
+                            Error::new(Operation::WatcherSignal, ErrorKind::SendFailed),
                         );
                     }
                 },
@@ -593,7 +710,11 @@ impl Host {
                     };
 
                     let Ok(item_name) = message.read1::<String>() else {
-                        error_fn(Error::WatcherRegisterInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherRegister,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
 
                         let _ = self.channel.send(reply_error(
                             &message,
@@ -606,7 +727,11 @@ impl Host {
                     let is_item_new = watcher.items.insert(item_name.clone());
 
                     if self.channel.send(message.method_return()).is_err() {
-                        error_fn(Error::WatcherRegisterReplySend(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherRegister,
+                            ErrorKind::SendFailed,
+                            sender,
+                        ));
                     }
 
                     if is_item_new {
@@ -620,7 +745,7 @@ impl Host {
                             .unwrap()
                             .append1(item_name),
                             &mut error_fn,
-                            Error::WatcherSignalSend,
+                            Error::new(Operation::WatcherSignal, ErrorKind::SendFailed),
                         );
                     }
                 },
@@ -632,7 +757,11 @@ impl Host {
                     ..
                 } => {
                     let Ok(interface) = message.read1::<String>() else {
-                        error_fn(Error::WatcherGetInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherGet,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
 
                         let _ = self.channel.send(reply_error(
                             &message,
@@ -670,7 +799,11 @@ impl Host {
                                 .send(message.method_return().append1(dict))
                                 .is_err()
                             {
-                                error_fn(Error::WatcherGetReplySend(sender.to_string()));
+                                error_fn(Error::with_peer(
+                                    Operation::WatcherGet,
+                                    ErrorKind::SendFailed,
+                                    sender,
+                                ));
                             }
                         },
                         _ => {
@@ -689,7 +822,11 @@ impl Host {
                     ..
                 } => {
                     let Ok((interface, property)) = message.read2::<String, String>() else {
-                        error_fn(Error::WatcherGetInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherGet,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
 
                         let _ = self.channel.send(reply_error(
                             &message,
@@ -732,7 +869,11 @@ impl Host {
                             };
 
                             if self.channel.send(reply).is_err() {
-                                error_fn(Error::WatcherGetReplySend(sender.to_string()));
+                                error_fn(Error::with_peer(
+                                    Operation::WatcherGet,
+                                    ErrorKind::SendFailed,
+                                    sender,
+                                ));
                             }
                         },
                         _ => {
@@ -751,12 +892,20 @@ impl Host {
                     ..
                 } => {
                     let Ok(item_name) = message.read1::<String>() else {
-                        error_fn(Error::WatcherSignalInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherSignal,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
                     if self.items.contains_key(&item_name) {
-                        error_fn(Error::WatcherSignalInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherSignal,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     }
 
@@ -782,7 +931,11 @@ impl Host {
                             );
                         },
                         Err(()) => {
-                            error_fn(Error::ItemGetSend(item_name.clone()));
+                            error_fn(Error::with_peer(
+                                Operation::ItemGet,
+                                ErrorKind::SendFailed,
+                                item_name.clone(),
+                            ));
                         },
                     }
                 },
@@ -794,12 +947,20 @@ impl Host {
                     ..
                 } => {
                     let Ok(item_name) = message.read1::<String>() else {
-                        error_fn(Error::WatcherSignalInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherSignal,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
                     let Some(item) = self.items.remove(&item_name) else {
-                        error_fn(Error::WatcherSignalInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::WatcherSignal,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
@@ -828,14 +989,22 @@ impl Host {
                         "NewToolTip" => vec!["ToolTip"],
                         "NewStatus" => {
                             let Ok(status) = message.read1::<String>() else {
-                                error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                                error_fn(Error::with_peer(
+                                    Operation::ItemSignal,
+                                    ErrorKind::InvalidData,
+                                    sender,
+                                ));
                                 continue;
                             };
 
                             let intl_item = self.items.get_mut(sender).expect("unreachable");
 
                             let Some(item) = intl_item.item_op.as_mut() else {
-                                error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                                error_fn(Error::with_peer(
+                                    Operation::ItemSignal,
+                                    ErrorKind::InvalidData,
+                                    sender,
+                                ));
                                 continue;
                             };
 
@@ -845,7 +1014,11 @@ impl Host {
                         },
                         "NewIconThemePath" => vec!["IconThemePath"],
                         _ => {
-                            error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                            error_fn(Error::with_peer(
+                                Operation::ItemSignal,
+                                ErrorKind::InvalidData,
+                                sender,
+                            ));
                             continue;
                         },
                     };
@@ -865,7 +1038,11 @@ impl Host {
                                 );
                             },
                             Err(()) => {
-                                error_fn(Error::ItemGetSend(sender.to_string()));
+                                error_fn(Error::with_peer(
+                                    Operation::ItemGet,
+                                    ErrorKind::SendFailed,
+                                    sender,
+                                ));
                             },
                         }
                     }
@@ -883,7 +1060,11 @@ impl Host {
                     let Ok((updated_props, removed_props)) =
                         message.read2::<UpdatedProps, RemovedProps>()
                     else {
-                        error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::ItemSignal,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
@@ -1139,7 +1320,11 @@ impl Host {
                     ..
                 } => {
                     let Ok((_revision, parent_id)) = message.read2::<u32, i32>() else {
-                        error_fn(Error::ItemSignalInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::ItemSignal,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
@@ -1172,7 +1357,13 @@ impl Host {
                                 ),
                             );
                         },
-                        Err(()) => error_fn(Error::MenuGetLayoutSend(sender.to_string())),
+                        Err(()) => {
+                            error_fn(Error::with_peer(
+                                Operation::MenuGetLayout,
+                                ErrorKind::SendFailed,
+                                sender,
+                            ))
+                        },
                     }
                 },
                 MsgMatch {
@@ -1199,8 +1390,9 @@ impl Host {
                                     "RegisterStatusNotifierHost",
                                     ((&self.bus_name),),
                                 ))
-                                .map_err(|()| Error::HostRegisterSend)
-                            {
+                                .map_err(|()| {
+                                    Error::new(Operation::RegisterHost, ErrorKind::SendFailed)
+                                }) {
                                 Ok(serial) => {
                                     self.pending_replies
                                         .insert(serial, (Instant::now(), ReplyTo::RegisterHost));
@@ -1220,7 +1412,7 @@ impl Host {
                                 }
                             }
 
-                            error_fn(Error::HostWatcherLost);
+                            error_fn(Error::new(Operation::RegisterHost, ErrorKind::WatcherLost));
                         }
 
                         continue;
@@ -1236,7 +1428,7 @@ impl Host {
                             )
                             .unwrap(),
                             &mut error_fn,
-                            Error::WatcherSignalSend,
+                            Error::new(Operation::WatcherSignal, ErrorKind::SendFailed),
                         );
                     }
 
@@ -1251,7 +1443,7 @@ impl Host {
                             .unwrap()
                             .append1(&name),
                             &mut error_fn,
-                            Error::WatcherSignalSend,
+                            Error::new(Operation::WatcherSignal, ErrorKind::SendFailed),
                         );
                     }
                 },
@@ -1261,12 +1453,20 @@ impl Host {
                     ..
                 } => {
                     let Some(reply_serial) = message.get_reply_serial() else {
-                        error_fn(Error::ReturnInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::Reply,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
                     let Some((_, reply_to)) = self.pending_replies.remove(&reply_serial) else {
-                        error_fn(Error::ReturnInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::Reply,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
@@ -1288,8 +1488,9 @@ impl Host {
                                         "RegisteredStatusNotifierItems",
                                     ),
                                 ))
-                                .map_err(|()| Error::HostGetItemsSend)
-                            {
+                                .map_err(|()| {
+                                    Error::new(Operation::GetItems, ErrorKind::SendFailed)
+                                }) {
                                 Ok(serial) => {
                                     self.pending_replies
                                         .insert(serial, (Instant::now(), ReplyTo::NotifierItems));
@@ -1299,7 +1500,9 @@ impl Host {
                         },
                         ReplyTo::NotifierItems => {
                             let Ok(items) = message.read1::<Variant<Vec<String>>>() else {
-                                error_fn(Error::ItemGetReplyInvalid(
+                                error_fn(Error::with_peer(
+                                    Operation::ItemGet,
+                                    ErrorKind::InvalidData,
                                     message.sender().unwrap().to_string(),
                                 ));
                                 continue;
@@ -1328,7 +1531,11 @@ impl Host {
                                         );
                                     },
                                     Err(()) => {
-                                        error_fn(Error::ItemGetSend(item_name.clone()));
+                                        error_fn(Error::with_peer(
+                                            Operation::ItemGet,
+                                            ErrorKind::SendFailed,
+                                            item_name.clone(),
+                                        ));
                                     },
                                 }
                             }
@@ -1337,14 +1544,22 @@ impl Host {
                             item_name,
                         } => {
                             let Some(intl_item) = self.items.get_mut(&item_name) else {
-                                error_fn(Error::ItemGetReplyInvalid(item_name));
+                                error_fn(Error::with_peer(
+                                    Operation::ItemGet,
+                                    ErrorKind::InvalidData,
+                                    item_name,
+                                ));
                                 continue;
                             };
 
                             let Ok(mut fields) =
                                 message.read1::<HashMap<String, Variant<Box<dyn RefArg>>>>()
                             else {
-                                error_fn(Error::ItemGetReplyInvalid(item_name));
+                                error_fn(Error::with_peer(
+                                    Operation::ItemGet,
+                                    ErrorKind::InvalidData,
+                                    item_name,
+                                ));
                                 continue;
                             };
 
@@ -1449,7 +1664,11 @@ impl Host {
                                         );
                                     },
                                     Err(()) => {
-                                        error_fn(Error::MenuGetLayoutSend(item_name.clone()));
+                                        error_fn(Error::with_peer(
+                                            Operation::MenuGetLayout,
+                                            ErrorKind::SendFailed,
+                                            item_name.clone(),
+                                        ));
                                     },
                                 }
                             }
@@ -1467,12 +1686,20 @@ impl Host {
                             property,
                         } => {
                             let Some(intl_item) = self.items.get_mut(&item_name) else {
-                                error_fn(Error::ItemGetReplyInvalid(item_name));
+                                error_fn(Error::with_peer(
+                                    Operation::ItemGet,
+                                    ErrorKind::InvalidData,
+                                    item_name,
+                                ));
                                 continue;
                             };
 
                             let Some(item) = intl_item.item_op.as_mut() else {
-                                error_fn(Error::ItemGetReplyInvalid(item_name));
+                                error_fn(Error::with_peer(
+                                    Operation::ItemGet,
+                                    ErrorKind::InvalidData,
+                                    item_name,
+                                ));
                                 continue;
                             };
 
@@ -1569,12 +1796,20 @@ impl Host {
                             parent_id,
                         } => {
                             let Some(intl_item) = self.items.get_mut(&item_name) else {
-                                error_fn(Error::MenuGetLayoutInvalid(item_name));
+                                error_fn(Error::with_peer(
+                                    Operation::MenuGetLayout,
+                                    ErrorKind::InvalidData,
+                                    item_name,
+                                ));
                                 continue;
                             };
 
                             let Some(item) = intl_item.item_op.as_mut() else {
-                                error_fn(Error::MenuGetLayoutInvalid(item_name));
+                                error_fn(Error::with_peer(
+                                    Operation::MenuGetLayout,
+                                    ErrorKind::InvalidData,
+                                    item_name,
+                                ));
                                 continue;
                             };
 
@@ -1584,7 +1819,11 @@ impl Host {
                                     match find_menu_node(&mut item.menu, parent_id, 0) {
                                         Some(some) => some,
                                         None => {
-                                            error_fn(Error::MenuGetLayoutInvalid(item_name));
+                                            error_fn(Error::with_peer(
+                                                Operation::MenuGetLayout,
+                                                ErrorKind::InvalidData,
+                                                item_name,
+                                            ));
                                             continue;
                                         },
                                     }
@@ -1594,12 +1833,20 @@ impl Host {
                             let (Some(revision), Some(arg)) =
                                 message.get2::<u32, Box<dyn RefArg>>()
                             else {
-                                error_fn(Error::MenuGetLayoutInvalid(item_name));
+                                error_fn(Error::with_peer(
+                                    Operation::MenuGetLayout,
+                                    ErrorKind::InvalidData,
+                                    item_name,
+                                ));
                                 continue;
                             };
 
                             let Ok(new_node) = parse_menu(arg.as_ref(), depth) else {
-                                error_fn(Error::MenuGetLayoutInvalid(item_name));
+                                error_fn(Error::with_peer(
+                                    Operation::MenuGetLayout,
+                                    ErrorKind::InvalidData,
+                                    item_name,
+                                ));
                                 continue;
                             };
 
@@ -1615,12 +1862,20 @@ impl Host {
                     ..
                 } => {
                     let Some(reply_serial) = message.get_reply_serial() else {
-                        error_fn(Error::ReturnInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::Reply,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
                     let Some((_, reply_to)) = self.pending_replies.remove(&reply_serial) else {
-                        error_fn(Error::ReturnInvalid(sender.to_string()));
+                        error_fn(Error::with_peer(
+                            Operation::Reply,
+                            ErrorKind::InvalidData,
+                            sender,
+                        ));
                         continue;
                     };
 
@@ -1630,10 +1885,10 @@ impl Host {
 
                     match reply_to {
                         ReplyTo::RegisterHost => {
-                            error_fn(Error::HostRegister(e));
+                            error_fn(Error::new(Operation::RegisterHost, ErrorKind::Dbus(e)));
                         },
                         ReplyTo::NotifierItems => {
-                            error_fn(Error::HostGetItems(e));
+                            error_fn(Error::new(Operation::GetItems, ErrorKind::Dbus(e)));
                         },
                         ReplyTo::ItemGetAll {
                             item_name,
@@ -1641,12 +1896,20 @@ impl Host {
                         | ReplyTo::ItemGet {
                             item_name, ..
                         } => {
-                            error_fn(Error::ItemGet(item_name, e));
+                            error_fn(Error::with_peer(
+                                Operation::ItemGet,
+                                ErrorKind::Dbus(e),
+                                item_name,
+                            ));
                         },
                         ReplyTo::MenuGetLayout {
                             item_name, ..
                         } => {
-                            error_fn(Error::MenuGetLayout(item_name, e));
+                            error_fn(Error::with_peer(
+                                Operation::MenuGetLayout,
+                                ErrorKind::Dbus(e),
+                                item_name,
+                            ));
                         },
                     }
                 },
@@ -1666,10 +1929,10 @@ impl Host {
             if inst_sent.elapsed() > Duration::from_millis(500) {
                 match reply_to {
                     ReplyTo::RegisterHost => {
-                        error_fn(Error::HostRegisterTimeout);
+                        error_fn(Error::new(Operation::RegisterHost, ErrorKind::Timeout));
                     },
                     ReplyTo::NotifierItems => {
-                        error_fn(Error::HostGetItemsTimeout);
+                        error_fn(Error::new(Operation::GetItems, ErrorKind::Timeout));
                     },
                     ReplyTo::ItemGetAll {
                         item_name,
@@ -1677,12 +1940,20 @@ impl Host {
                     | ReplyTo::ItemGet {
                         item_name, ..
                     } => {
-                        error_fn(Error::ItemGetReplyTimeout(item_name.clone()));
+                        error_fn(Error::with_peer(
+                            Operation::ItemGet,
+                            ErrorKind::Timeout,
+                            item_name.clone(),
+                        ));
                     },
                     ReplyTo::MenuGetLayout {
                         item_name, ..
                     } => {
-                        error_fn(Error::MenuGetLayoutTimeout(item_name.clone()));
+                        error_fn(Error::with_peer(
+                            Operation::MenuGetLayout,
+                            ErrorKind::Timeout,
+                            item_name.clone(),
+                        ));
                     },
                 }
 
