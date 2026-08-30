@@ -1,12 +1,12 @@
-//! A [StatusNotifierItem](https://www.freedesktop.org/wiki/Specifications/StatusNotifierItem/)
-//! host, for building system trays and similar applications.
+//! A [StatusNotifierHost](https://www.freedesktop.org/wiki/Specifications/StatusNotifierItem/)
+//! for building system trays and similar applications.
 //!
 //! [`Host`] connects to the session bus, registers a `StatusNotifierHost` (and a built-in
-//! `StatusNotifierWatcher` if none is running), and keeps track of every registered item along
+//! `StatusNotifierWatcher` if not already present), and keeps track of every registered item along
 //! with its menu. Changes are delivered as [`Event`]s through [`Host::process_events`], and items
 //! are interacted with through the `item_*` and `menu_*` methods.
 //!
-//! See the `basic` and `polling` examples for usage.
+//! See the `blocking` and `polling` examples for usage.
 
 use std::collections::{HashMap, HashSet};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
@@ -190,6 +190,9 @@ struct IntlItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// The item was registered and its properties retrieved.
+    ///
+    /// **Note**: The item's menu will not be fetched at the time of this event, but all other
+    /// item properties *should be* present.
     Added,
     /// The item was removed.
     Removed,
@@ -266,7 +269,7 @@ pub struct Host {
 /// The error type used throughout the library.
 ///
 /// [`operation`](Error::operation) tracks where the error originated and [`kind`](Error::kind)
-/// what went wrong, so the two can be matched on independently.
+/// what went wrong.
 #[derive(Debug)]
 pub struct Error {
     /// The operation the error originated from.
@@ -571,9 +574,11 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item, or
-    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
-    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
+    /// - [`ErrorKind::UnknownItem`] if `item_name` isn't a known item
+    /// - [`ErrorKind::Disconnected`] if the message couldn't be sent
+    ///
+    /// **Note**: An error reply from the item itself is delivered later through the `error_fn`
+    // of [`Host::process_events`].
     pub fn item_activate<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -588,9 +593,11 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item, or
-    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
-    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
+    /// - [`ErrorKind::UnknownItem`] if `item_name` isn't a known item
+    /// - [`ErrorKind::Disconnected`] if the message couldn't be sent
+    ///
+    /// **Note**: An error reply from the item itself is delivered later through the `error_fn`
+    // of [`Host::process_events`].
     pub fn item_context_menu<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -605,9 +612,11 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item, or
-    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
-    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
+    /// - [`ErrorKind::UnknownItem`] if `item_name` isn't a known item
+    /// - [`ErrorKind::Disconnected`] if the message couldn't be sent
+    ///
+    /// **Note**: An error reply from the item itself is delivered later through the `error_fn`
+    // of [`Host::process_events`].
     pub fn item_secondary_activate<N>(&mut self, item_name: N, x: i32, y: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -622,9 +631,11 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item, or
-    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
-    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
+    /// - [`ErrorKind::UnknownItem`] if `item_name` isn't a known item
+    /// - [`ErrorKind::Disconnected`] if the message couldn't be sent
+    ///
+    /// **Note**: An error reply from the item itself is delivered later through the `error_fn`
+    // of [`Host::process_events`].
     pub fn item_scroll<N>(
         &mut self,
         item_name: N,
@@ -691,11 +702,13 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item,
-    /// [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu,
-    /// [`ErrorKind::MenuNodeDisabled`] if the node isn't enabled, or
-    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
-    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
+    /// - [`ErrorKind::UnknownItem`] if `item_name` isn't a known item
+    /// - [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu
+    /// - [`ErrorKind::MenuNodeDisabled`] if the node isn't enabled
+    /// - [`ErrorKind::Disconnected`] if the message couldn't be sent
+    ///
+    /// **Note**: An error reply from the item itself is delivered later through the `error_fn` of
+    /// [`Host::process_events`].
     pub fn menu_clicked<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -709,10 +722,13 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item,
-    /// [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu, or
-    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
-    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
+    /// - [`ErrorKind::UnknownItem`] if `item_name` isn't a known item
+    /// - [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu
+    /// - [`ErrorKind::MenuNodeDisabled`] if the node isn't enabled
+    /// - [`ErrorKind::Disconnected`] if the message couldn't be sent
+    ///
+    /// **Note**: An error reply from the item itself is delivered later through the `error_fn` of
+    /// [`Host::process_events`].
     pub fn menu_hovered<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -726,10 +742,15 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item,
-    /// [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu, or
-    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
-    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
+    /// # Errors
+    ///
+    /// - [`ErrorKind::UnknownItem`] if `item_name` isn't a known item
+    /// - [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu
+    /// - [`ErrorKind::MenuNodeDisabled`] if the node isn't enabled
+    /// - [`ErrorKind::Disconnected`] if the message couldn't be sent
+    ///
+    /// **Note**: An error reply from the item itself is delivered later through the `error_fn` of
+    /// [`Host::process_events`].
     pub fn menu_opened<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -743,10 +764,13 @@ impl Host {
     ///
     /// # Errors
     ///
-    /// Returns [`ErrorKind::UnknownItem`] if `item_name` isn't a known item,
-    /// [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu, or
-    /// [`ErrorKind::Disconnected`] if the message couldn't be sent. An error reply from the item
-    /// itself is delivered later through the `error_fn` of [`Host::process_events`].
+    /// - [`ErrorKind::UnknownItem`] if `item_name` isn't a known item
+    /// - [`ErrorKind::UnknownMenuNode`] if `node_id` isn't part of the item's menu
+    /// - [`ErrorKind::MenuNodeDisabled`] if the node isn't enabled
+    /// - [`ErrorKind::Disconnected`] if the message couldn't be sent
+    ///
+    /// **Note**: An error reply from the item itself is delivered later through the `error_fn` of
+    /// [`Host::process_events`].
     pub fn menu_closed<N>(&mut self, item_name: N, node_id: i32) -> Result<(), Error>
     where
         N: AsRef<str>,
@@ -873,9 +897,9 @@ impl Host {
     ///     - `None` will block until there is an event or an error to be processed.
     ///     - `Some(Duration::ZERO)` will not block (primarily used for polling).
     ///
-    /// **Note**: This method will return `Ok(true)` when there are pending writes to the `Fd`. This *should*
-    /// be relatively rare, so it can be ignored for initial implementations, but should be
-    /// considered when writing more robust implementations.
+    /// **Note**: This method will return `Ok(true)` when there are pending writes to the `Fd`.
+    /// This *should* be relatively rare, so it can be ignored for initial implementations, but
+    /// should be considered when writing more robust implementations.
     pub fn process_events<EventFn, ErrorFn>(
         &mut self,
         mut event_fn: EventFn,

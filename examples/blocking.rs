@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use status_notifier::Host;
 
 fn main() {

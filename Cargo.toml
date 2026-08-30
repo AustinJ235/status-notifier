@@ -1,8 +1,15 @@
 [package]
 name = "status-notifier"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
-publish = false
+repository = "https://github.com/AustinJ235/status-notifier"
+documentation = "https://docs.rs/status-notifier"
+description = "A StatusNotifierHost for building system trays and similar applications."
+license = "MIT"
+keywords = ["dbus", "systray", "tray", "sni", "linux"]
+categories = ["os::linux-apis", "api-bindings", "gui"]
+readme = "README.md"
+rust-version = "1.88"
 
 [dependencies]
 dbus = "0.9"
