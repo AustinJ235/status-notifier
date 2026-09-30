@@ -2022,8 +2022,9 @@ impl Host {
                                 },
                                 "IconPixmap" => {
                                     if let Some(pixmap) = message
-                                        .get1::<Box<dyn RefArg>>()
-                                        .map(|arg| parse_pixmap_arg(&arg))
+                                        .read1::<Variant<Box<dyn RefArg>>>()
+                                        .ok()
+                                        .map(|arg| parse_pixmap_arg(&arg.0))
                                         && pixmap != item.icon_pixmap
                                     {
                                         item.icon_pixmap = pixmap;
@@ -2040,8 +2041,9 @@ impl Host {
                                 },
                                 "AttentionIconPixmap" => {
                                     if let Some(pixmap) = message
-                                        .get1::<Box<dyn RefArg>>()
-                                        .map(|arg| parse_pixmap_arg(&arg))
+                                        .read1::<Variant<Box<dyn RefArg>>>()
+                                        .ok()
+                                        .map(|arg| parse_pixmap_arg(&arg.0))
                                         && pixmap != item.attention_icon_pixmap
                                     {
                                         item.attention_icon_pixmap = pixmap;
@@ -2062,8 +2064,9 @@ impl Host {
                                 },
                                 "OverlayIconPixmap" => {
                                     if let Some(pixmap) = message
-                                        .get1::<Box<dyn RefArg>>()
-                                        .map(|arg| parse_pixmap_arg(&arg))
+                                        .read1::<Variant<Box<dyn RefArg>>>()
+                                        .ok()
+                                        .map(|arg| parse_pixmap_arg(&arg.0))
                                         && pixmap != item.overlay_icon_pixmap
                                     {
                                         item.overlay_icon_pixmap = pixmap;
@@ -2072,8 +2075,9 @@ impl Host {
                                 },
                                 "ToolTip" => {
                                     if let Some(tool_tip) = message
-                                        .get1::<Box<dyn RefArg>>()
-                                        .map(|arg| parse_tool_tip_arg(&arg))
+                                        .read1::<Variant<Box<dyn RefArg>>>()
+                                        .ok()
+                                        .map(|arg| parse_tool_tip_arg(&arg.0))
                                         && tool_tip != item.tool_tip
                                     {
                                         item.tool_tip = tool_tip;

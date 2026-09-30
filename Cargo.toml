@@ -1,6 +1,6 @@
 [package]
 name = "status-notifier"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 repository = "https://github.com/AustinJ235/status-notifier"
 documentation = "https://docs.rs/status-notifier"
